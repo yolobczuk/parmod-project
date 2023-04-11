@@ -1,0 +1,1141 @@
+---
+title: "Projekt z przedmiotu Modele parametryczne"
+author: "Wojciech Sobczuk, Jan Jarosz"
+output: 
+  html_document:
+    toc: yes
+    df_print: paged
+    fig_caption: yes
+  html_notebook: default
+  pdf_document: 
+    latex_engine : xelatex
+  always_allow_html: true
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+```
+
+```{r}
+library(dplyr)
+library(MASS)
+library(corrr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(vtable)
+library(caret)
+library(table1)
+library(pscl)
+library(corrplot)
+library(reshape2)
+library("pROC")
+```
+
+# Wstęp
+
+Wybrany przez nas zbiór danych dotyczy parametrów odmian białego oraz czerwonego wina portugalskiego typu "Vinho Verde". Dane te zostały pobrane z portalu Kaggle, na który to zostały udostępnione z UCI Machine Learning Repository. Ze względu na prywatność oraz kwestie logistyczne, jedynie parametry fizyczno-chemiczne oraz sensoryczne zostały udostępnione. Niestety, ten zbiór danych nie zawiera danych o gatunku winogrona, producencie wina czy jego cenie. Zawiera on jednak bardzo przydatne zmienne takie jak:
+
+* `type` oznacza typ wina (białe/czerwone)
+* `fixed.acidity` oznacza kwaskowatość wina nie wpływającą znacząco na jego smak, mierzone w $\frac{g}{l}$;
+* `volatile.acidity` oznacza "negatywną" kwaskowatość wina, psującą jego smak, mierzone w $\frac{g}{l}$;
+* `citric.acid` oznacza "pozytywną" kwaskowatość wina, dodającą cytrusowy posmak oraz "świeżość", mierzone w $\frac{g}{l}$;
+* `residual.sugar` oznacza poziom cukru pozostały po fermentacji (w $\frac{g}{l}$); wina z zawartością cukru powyżej $45 \frac{g}{l}$ są uważane za słodkie;
+* `chlorides` oznacza ilość soli w winie;
+* `free.sulfur.dioxide` oznacza ilość wolnej formy $SO_2$ (w ppm), zapobiegająca rozwojowi drobnoustrojów i oksydacji wina; 
+* `total.sulfur.dioxide` oznacza ilość wolnej i związanej formy $SO_2$ (w ppm), niewykrywalny w niskich ilościach, w ilościach powyżej 50 ppm zaczyna być odczuwalny w zapachu i smaku wina;
+* `density` gęstość płynu;
+* `pH` oznacza indeks pH wina;
+* `sulphates` oznacza ilość siarczanów w winie;
+* `alcohol` oznacza procent alkoholu w winie.
+
+Zmienna `quality` oznacza subiektywną jakość wina w skali dyskretnej od 0 do 10. Zostanie ona przekonwertowana do zmiennej zero-jedynkowej `quality.cat`. Wina o jakości większej lub równej 6 zostaną zakwalifikowane jako wina dobre i przydzielona zostanie im wartość 1, a pozostałe zakwalifikowane będą jako wina złe i otrzymają wartość 0. 
+
+Celem tej analizy jest znalezienie istotnych parametrów wpływających na jakość wina. W związku z tym, zmienna `quality.cat` będzie zmienną objaśnianą, a pozostałe zmienne będą zmiennymi objaśniającymi. Zbudowane zostaną uogólnione modele liniowe (modele logitowe i probitowe dwumianowe dla zmiennej `quality.cat`). W trakcie budowania modelu będziemy eksperymentować z doborem zmiennych objaśniających, tak aby stworzyć jak najdokładniejszy model przewidujący jakość wina.
+
+Nie zdecydowaliśmy się na tworzenie modelu wielomianowego ze względu na brak balansu między grupami. Większość wartości to 5 i 6 co mocno wpłynęłoby na tę analizę i dlatego też podjęliśmy decyzję o dychotomizacji zmiennej objaśnianej i stworzenie dwóch modeli dwumianowych.
+
+Modelować będziemy szansę trafienia na dobre wino w zależności od poszczególnych jego parametrów.
+
+# Załadowanie danych oraz analiza wstępna
+
+Pierwszym krokiem w tej analizie będzie załadowanie danych z pliku, wydrukowanie i interpretacja podstawowych miar statystycznych oraz przedstawienie rozkładów wszystkich zmiennych. Podjęta zostanie również decyzja co zrobić z brakami danych (usunięcie obserwacji w razie małej ich ilości lub dobór metody imputacji w przypadku dużej liczby)
+
+```{r}
+wine = read.csv("winequalityN.csv", stringsAsFactors = T)
+wine = wine %>% mutate(quality.cat = as.factor(ifelse(quality >=6, 1, 0)), quality = as.factor(quality))
+```
+
+```{r}
+st(wine)
+```
+
+Statystyki opisowe prezentują się następująco:
+
+* występuje `1599` win czerwonych oraz `4898` win białych;
+* średnia neutralna kwaskowatość wina wynosi `7.22` z odchyleniem standardowym `1.3`, wystąpiło tutaj `10` braków wartości;
+* negatywna kwaskowatość wina kształtuje się na poziomie `0.34` ze średnim błędem `0.17`, wystąpiło tutaj `8` braków wartości;
+* pozytywna kwaskowatość wina wyniosła `0.32` z odchyleniem `0.15`, wystąpiły tutaj `3` brakujące wartości;
+* poziom cukru pozostały po fermentacji kształtował się na poziomie `5.44`$\frac{g}{l}$ z błędem `4.76`, wystąpiły tutaj `2` braki wartości;
+* średnia wartość soli w winie wyniosła `0.056` z odchyleniem standardowym `0.035`, wystąpiły tutaj `2` braki wartości;
+* średnia wartość wolnej formy $SO_2$ wyniosła `30.5` ppm, o błędzie `17.7`; 
+* wolna i związana forma $SO_2$ wyniosła średnio `115.7` ppm z odchyleniem standardowym `56.5`;
+* średnia gęstość wina wyniosła `0.995` z odchyleniem standardowym `0.003`;
+* indeks pH wynosił średnio `3.22` z odchyleniem standardowym `0.16`, wystąpiło tutaj `9` braków wartości;
+* ilość siarczanów wina kształtowałą się na poziomie `0.53` z błędem `0.15`, wystąpiły tutaj `4` braki wartości;
+* średni procent alokoholu w winie wyniósł `10.49` z odchyleniem `1.19`;
+* średnia jakość wina wyniosła `5.82` o odchyleniu `0.87`;
+* występuje `2384` win złych oraz `4113` win dobrych.
+
+Wartości brakujących jest niewiele, dlatego też postanowiliśmy kompletnie usunąć obserwacje z brakującymi danymi z naszego zbioru.
+
+```{r}
+wine = mutate(drop_na(wine), quality.cat = as.factor(quality.cat), quality = as.factor(quality))
+```
+
+
+```{r}
+plots1 <- ggplot(gather((keep(wine, is.numeric))), aes(x = value)) +  
+  geom_histogram(aes(y = ..density..),
+                 colour = 1, fill = "white") +
+  geom_density(lwd = 1,
+               linetype = 1,
+               colour = 2)+
+  ggtitle("Ryc. 1. Rozkłady zmiennych zbioru danych")+
+  ylab("Częstośc")+
+  xlab("Wartość zmiennej")+
+  facet_wrap(~ key, scales = "free")
+plots1
+```
+
+W celu poprawnego dopasowania modelu oraz sprawdzenie jego dokładności, w następnym kroku zbiór `wine` zostanie podzielony na zbiór treningowy oraz zbiór testowy. Pozwoli nam to sprawdzić jak model stworzony na danych treningowych 'spisze się' gdy zadamy mu dane, których wcześniej nie widział. Jeśli parametry oceny dobroci modelu będą zbliżone dla obu zbiorów - oznaczać to będzie, że model został prawidłowo wyspecyfikowany.
+
+
+```{r}
+set.seed(2137)
+sample <- sample.int(n = nrow(wine), size = floor(.75*nrow(wine)), replace = F)
+train <- wine[sample, ]
+test  <- wine[-sample, ]
+```
+
+
+# Analiza eksploracyjna
+
+Po przygotowaniu danych do uczenia modelu i krótkim przedstawieniu zbioru z którym mamy do czynienia. Należy zabrać się za krótką analizę eksploracyjną danych.
+
+W pierwszej kolejności sprawdźmy korelacje pomiędzy zmiennymi ilościowymi:
+
+```{r, fig.width=10,fig.height=11}
+res <- cor(keep(wine,is.numeric))
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 60, main = "Ryc. 2. Macierz korelacji",mar=c(0,0,1,0))
+```
+
+Na rycinie 2 widzimy, że zmienne którymi moglibyśmy się posłużyć nie są nadmiernie skorelowane. Jedyne pary zmiennych nad którymi można by się zastanowić to:
+
+* density - alcohol
+* free.sulfur.dioxide - total.sulfur.dioxide
+* density - fixed acidity
+
+Przy czym ciężko wyróżńić tutaj zmienne które 'notorycznie' korelują z innymi, w związku z czym nie widzimy sensu wyłączania zmiennych z analizy.
+
+
+```{R, fig.width=10,fig.height=11}
+
+wine %>%
+    gather(-quality, -quality.cat,-type, key = "var", value = "value") %>%
+    ggplot() +
+    geom_boxplot(aes(x = quality.cat, y = value, color = var)) + 
+    facet_wrap(~ var, scales = "free") + 
+    theme_bw()+
+    theme(legend.position = "none")+
+    ylab("Wartość zmiennej objaśniającej")+
+    xlab("Wartość zmiennej objaśnianej")+
+  ggtitle("Ryc. 3. Wykresy pudełkowe zależności między zmiennymi ciągłymi a zmienną objaśnianą")
+```
+
+Analizując wykresy pudełkowe widoczne na rycinie 3 zależności pomiędzy zmiennymi zmeinnymi ciągłymi a zmienną objaśnianą wyróżnić można następujące zmienne:
+
+* Alcohol - bardzo duża zmienność pomiędzym grupami
+* Density - zauważalna zmienność 
+* Volatile.acidity - zauważalna zmienność
+* Total.sulfur.dioxide - zauważalna zmienność na dość dużej skali
+
+Jedyna zmienna która nie została uwzgledniona w powyższych analizach to zmienna 'type'. Z racji że jest to również zmienna kategorialna posłużymy się analizą wykresu dystrybuanty warunkowej.
+
+```{r fig.cap = "Wykresy dystrybuanty warunkowej"}
+cdplot(wine$quality.cat~wine$type, xlab = 'Type', ylab = 'Quality category', main = 'Ryc. 4. Wykres dystrybuanty warunkowej')
+spineplot(wine$quality.cat~wine$type, xlab = 'Type', ylab = 'Quality category', main = 'Ryc. 5. Wykres typu "spine"')
+```
+
+Powyższe ryciny obrazują istnienie zależności pomiędzy typem wina a kategoryzacją jakości. Wina białe wydają się być wyżej oceniane niż wina czerwone. 
+W związku z tym zmienna `Type` również zostaje zmienną która będzie brana pod uwagę przy budowie modeli.
+
+## Podsumowanie
+
+Zmienne które będą brały udział w analizie to:
+
+* Density
+* Alcohol
+* Volatile.acidity
+* Total.sulfur.dioxide
+
+Przy czym pamiętając o wskazaniach macierzy korelacji uważać należy na mieszanie w jednym modelu zmiennej Alcohol i Density gdyż korelują one ze sobą w znacznym stopniu.
+
+
+# Analiza modeli logitowych
+
+Pierwszym typem modelu, jaki stworzymy będzie model logitowy. Do budowania modeli logitowych posłużę się jedynie trzema zmiennymi (ze względu na późniejszą interpretację interakcji) - wyłączę z analizy zmienną `density` oraz `type`. Rozpoczniemy analizę od modeli z jedną zmienną objaśniającą, następnie będą modele z dwiema zmiennymi (bez interakcji) oraz trzema (również bez interakcji). Na koniec pozostawimy stworzenie modeli z interakcjami. Dla pierwszego tworzonego modelu opiszemy wszystkie etapy tworzenia naszej analizy, a następne modele zostaną stworzone analogicznie. Stąd nie ma potrzeby powtarzania opisu etapów tworzenia modeli.
+
+## Modele z pojedynczą zmienną objaśniającą
+
+Stworzyliśmy trzy modele logitowe z pojedynczą zmienną objaśniającą. Poniżej znajduje się druk z podsumowaniem modeli.
+
+### Specyfikacja modeli
+
+```{r}
+cat("Model 1 - quality.cat ~ volatile.acidity")
+model.1.1 <- glm(quality.cat ~ volatile.acidity, data = train, family = binomial(link=logit))
+summary(model.1.1)
+cat("Model 2 - quality.cat ~ total.sulfur.dioxide")
+model.1.2 <- glm(quality.cat ~ total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.1.2)
+cat("Model 3 - quality.cat ~ alcohol")
+model.1.3 <- glm(quality.cat ~ alcohol, data = train, family = binomial(link=logit))
+summary(model.1.3)
+```
+
+Jak widać, wszystkie parametry modelu są istotnie różne od 0 (na poziomie istotności $0.95$, jest to poziom dobrany przeze mnie do wszystkich testów w tej pracy) co oznacza, że mogą być użyte do aproksymowania szansy na trafienie dobrego wina. Chciałbym tutaj zaznaczyć, że w moim odczuciu ważna jest istotność statystyczna zmiennych. Mnogość modeli, którą estymujemy daje nam możliwość 'wybrzydzania' i wybierania modeli, których wszystkie parametry mają statystycznie istotną interpretację. Podejście to będzie stosowane we wszystkich przypadkach w tej analizie. Z tych trzech modeli wybierzemy najlepszy, który głębiej zinterpretujemy oraz sprawdzimy czy jest on wiernym odzwierciedleniem rzeczywistości. Ocena modelu odbędzie się za pomocą kryteriów AIC, dewiancji resztowej, dewiancji zerowej (która będzie dokładnie taka sama dla porównywanych modeli) i współczynników pseudo-$R^2$ McFaddena oraz Cragg-Uhlera.
+
+### Kryteria oceny modelu
+
+Zaprezentujemy krótkie wyjaśnienie każdego z tych kryterióW:
+
+* kryterium Akaike (AIC) - kryterium to służy do porównywania dwóch lub większej ilości modeli, jest ono liczone jako różnica liczby zmiennych niezależnych (objaśniających) i logarytmu funkcji wiarygodności. Opiera się ono na zasadzie, że reprezentacja danych poprzez model nigdy nie będzie dokładna i straci się część informacji o prawdziwych zależnościach. Jest to pewien kompromis pomiędzy dopasowaniem a prostotą modelu. Im mniejsza wartość tego kryterium, tym mniej informacji zostało straconych, więc tym lepszy jest dany model;
+* kryterium dewiancji zerowej i resztowej - dewiancja zerowa reprezentuje dobroć predykcji modelem zbudowanym jedynie z wyrazu wolnego. Dewiancja resztowa mówi nam natomiast o dobroci predykcji poprzez model zbudowany z danych predyktorów. Im mniejsza wartość dewiancji resztowej tym lepsze dopasowanie modelu. Różnica pomiędzy dewiancją zerową, a dewiancją resztową może posłużyć do testóW istotności dopasowania modelu (np. chi-kwadrat).
+* współczynniki pseudo-$R^2$ McFaddena oraz Cragg-Uhlera - działają one podobnie do współczynników $R^2$ znanych z regresji liniowej w tym sensie, że są one z przedziału [0;1] oraz większa wartość tych współczynnikóW sugeruje lepiej dopasowany model. Współczynnik McFaddena łączy w sobie podejście wyjaśnianej wariancji oraz poprawy po przejściu z modelu zerowego (czyli takiego z samym wyrazem wolnym) do dopasowanego modelu, a Cragga-Uhlera jest adaptacją podejścia mającego na celu maksymalizację poprawy po przejściu z modelu zerowego do dopasowanego.
+
+Poniżej znajduje się definicja funkcji wyliczającej te współczynniki dla zadanego modelu
+
+
+```{r}
+ocena_modelu<- function(model) {
+  sink("NUL")
+  kryterium_AIC <- c(model$aic)
+  dew.reszt <- model$deviance
+  dew.zer <- model$null.deviance
+  McFadden<-pR2(model)[4]
+  Cragg_Uhler<-pR2(model)[6]
+  ocena <- data.frame(kryterium_AIC, dew.reszt, dew.zer, McFadden, Cragg_Uhler)
+  sink()
+  return(ocena)
+}
+```
+
+Poniżej znajduje się tabela z wynikami poszczególnych kryteriów.
+
+```{r}
+rbind(
+  model.1.1=ocena_modelu(model.1.1), 
+  model.1.2=ocena_modelu(model.1.2), 
+  model.1.3=ocena_modelu(model.1.3))
+```
+
+Na jej podstawie jesteśmy w stanie ocenić, że najlepszym modelem jest model 3, wyjaśniający dobroć wina poprzez zawartość alkoholu w nim. Do zintrepretowania pomocne okaże się wyliczenie eksponentów podniesionych do potęgi będącej wartością współczynnika, wykonam to poniżej.
+
+### Interpretacja współczynników
+
+```{r}
+exp(model.1.3$coefficients[1])
+
+(exp(model.1.3$coefficients[2])-1)*100
+```
+Interpretacja tych współczynników jest więc następująca.
+
+`wyraz wolny` - $e^{-8.29710} = 0.000249239$ interpretuje się jako szansę na trafienie dobrego wina przy zerowej zawartości alkoholu. W naszym zbiorze danych ta interpretacja nie ma sensu, gdyż zbiór nie zawierał win bezalkoholowych (dodatkowo, wino bezalkoholowe nie może być nazywane winem zgodnie z definicją Międzynarodowej Organizacji ds. Winorośli i Wina).
+
+`alcohol` - $(e^{-0.85444}-1)\cdot100\% = 135.0058\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `135%` (ponad dwukrotnie), ceteris paribus.
+
+Kolejnym etapem będzie ustalenie punktu odcięcia $p^*$ dla naszego modelu przy użyciu wykresów ROC. Skorzystam tutaj z gotowej funkcji z biblioteki `pROC`, która umożliwi nam wyznaczenie optymalnego punktu odcięcia.
+
+### Krzywe ROC oraz analiza dobroci dopasowania modelu
+
+Wykresy ROC tworzone są jako zbadanie poziomu czułości modelu w zależności od prawdopodobieństwa 'fałszywego alarmu', czyli stosunku fałszywie pozytywnych predykcji. Optymalny punkt odcięcia będzie wybrany dla punktu na wykresie ROC, który znajduje się najbliżej punktu [0;1] i będzie to współrzędna y tego punktu, czyli wartość stosunku fałszywie pozytywnych predykcji.
+
+```{r}
+rocobj1 <- roc(model.1.3$y, model.1.3$fitted.values)
+rocobj1_t <- roc(test$quality.cat, predict(model.1.3, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj1, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj1_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj1, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 6. Krzywa ROC dla zbioru treningowego, modelu 1") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj1_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 7. Krzywa ROC dla zbioru testowego, modelu 1") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+
+Ryciny 6 i 7 pokazują, że oba wykresy ROC wyglądają podobnie, uzyskaliśmy również na ich podstawie optymalne wartości $p^*$, które użyjemy do wykonania predykcji. Następnym krokiem będzie wyznaczenie miar jakości predykcji dla naszego modelu i zbiorów treningowego jak i testowego. Zostanie to również powtórzone dla zbioru testowego, aby sprawdzić czy dopasowanie mocno się różni między zbiorami (mogłoby to sugerować zbyt duże lub zbyt małe dopasowanie do danych ze zbioru treningowego, przez co stracilibyśmy wartość predykcyjną tego modelu). Dodatkowo, wyliczone zostanie AUC, które również powie nam o dopasowaniu do danych.
+
+```{r}
+p1 <- coords(rocobj1, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.1.3$fitted.values>p1, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.1.3$y, model.1.3$fitted.values)),'\n')
+
+
+p1_t <- coords(rocobj1_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.1.3, test, type = "response")>p1_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test$quality.cat, predict(model.1.3, test, type = "response"))),'\n')
+```
+
+Powyższy wydruk przedstawia tabelę trafności, informację o dokładności i jego przedział ufności, współczynnik no information rate (w skrócie NIR, który mówi nam o tym jaka jest dokładność przy losowej klasyfikacji obserwacji do grup), wartość p testu sprawdzającego czy dokładność jest większa od NIR (hipoteza zerowa mówi o tym, że dokładność jest mniejsza bądź równa NIR, alternatywna o tym, że jest większa) oraz wartości poszczególnych miar, które opiszę poniżej, wraz z ich wartościami dla naszych zbiorów:
+
+* `accuracy` - dokładność, czyli odsetek poprawnie zakwalifikowanych zer i jedynek. W przypadku tego modelu jest to `67.6%` dla zbioru treningowego oraz `69.8%` dla zbioru testowego
+* `no information rate (NIR)` - dokładność dla predykcji wygenerowanych losowo. W przypadku badanego modelu jest to `51%` dla zbioru treningowego oraz `55.7%` dla zbioru testowego
+* `sensitivity` - czułość, stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich obserwowanych jedynek. Mówi on o prawdopodobieństwie pozytywnego zdarzenia pod warunkiem bycia prawdziwie pozytywnym. Porównując wartość czułości dla naszych zbiorów, jest to `80.7%` dla treningowego oraz `81.5%` dla testowego
+* `specificity` - swoistość, specyficzność - stosunek liczby trafnie sklasyfikowanych zer do wszystkich obserwowanych zer. Stoi w kontrze do czułości, ponieważ mówi o prawdopodobieństwie negatywnego zdarzenia pod warunkiem bycia prawdziwie negatywnym. W przypadku zbioru treningowego jest to `55%`, a testowego `55.2%`.
+* `positive predictive value` - dodatnia zdolność predykcyjna - stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich prognozowanych jedynek. Jest to prawdopodobieństwo, że sklasyfikowane jedynka jest prawdziwą jedynką. Dla zbioru treningowego jest to `63.3%` a dla zbioru testowego `69.6%`.
+* `negative predictive value` - ujemna zdolność predykcyjna - stosunek liczby trafnie sklasyfikowanych zer do wszystkich prognozowanych zer. Jest to prawdopodobieństwo, że sklasyfikowane zero jest prawdziwym zerem. Dla zbioru treningowego jest to `74.7%` a dla zbioru testowego `70.3%`.
+* `prevalence` - prewalencja, chorobowość - stosunek liczby prawdziwych jedynek do wszystkich obserwacji. Popularna miara w epidemiologii, mówi o odsetku wszystkich jedynek w zbiorze. Dla zbioru testowego mamy więc `49%` jedynek a w zbiorze testowym `55.7%`.
+* `detection rate` - stosunek detekcji - stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich obserwacji. Również popularna miara w naukach o zdrowiu - w naszym zbiorze treningowym jest to `39.5%`, a w testowym `45.3%`.
+* `detection prevalence` - częstość wykrywania - stosunek wszystkich sklasyfikowanych jedynek do wszystkich obserwacji. Mówi ona nam więc o prawdopodobieństwie sklasyfikowania obserwacji jako jedynka. W naszym zbiorze treningowym wynosi ono `62.5%`, a w testowym `65.2%`.
+* `balanced accuracy` - zbalansowana dokładność - średnia z czułości oraz swoistości, czyli mówi ona o zdolności modelu do poprawnego klasyfikowania obserwacji do grupy. W przypadku tego modelu jest to `67.8%` dla zbioru treningowego oraz `68.3%` dla zbioru testowego.
+
+W podsumowaniu pojawia się parametr Kappa oraz p-value testu Mcnemara, ale pozostawiamy te miary bez komentarza ze względu na to, że ich nie interpretujemy.
+
+Naszym zdaniem, powyższe miary stanowią o dostatecznym dopasowaniu modelu do danych co pozwala nam na rozważenie tego modelu (mimo tego, że posiada tylko jedną zmienną) jako potencjalnego modelu, który w dobry sposób modeluje szansę na trafienie dobrego wina.
+
+Wartości AUC (czyli pola pod wykresem ROC) dla obu zbiorów są zbliżone i kształtują się na poziomie `0.74`, co dodatkowo popiera tezę o dostatecznym dopasowaniu obu zbiorów do danych. Oznacza to, że zmienna `alcohol` jest ważną zmienną w kontekście tworzenia dokładnych modeli i kolejne modele będziemy tworzyć w oparciu o tę zmienną.
+
+Następnym krokiem naszej analizy jest stworzenie dwóch modeli z dwiema zmiennymi objaśniającymi (w tym jedną - `alcohol`). 
+
+## Modele z dwiema zmiennymi objaśniającymi, bez interakcji
+
+### Specyfikacja modeli
+
+```{r}
+cat("Model 1 - quality.cat ~ volatile.acidity + alcohol")
+model.2.1 <- glm(quality.cat ~ volatile.acidity + alcohol, data = train, family = binomial(link=logit))
+summary(model.2.1)
+cat("Model 2 - quality.cat ~ total.sulfur.dioxide + alcohol")
+model.2.2 <- glm(quality.cat ~ total.sulfur.dioxide + alcohol, data = train, family = binomial(link=logit))
+summary(model.2.2)
+```
+
+### Kryteria oceny modelu
+
+```{r}
+rbind(
+  model.2.1=ocena_modelu(model.2.1), 
+  model.2.2=ocena_modelu(model.2.2))
+```
+
+Wybrany został model 1 ze względu na spełnienie wszystkich krytertiów doboru modelu.
+
+### Krzywe ROC oraz analiza dobroci dopasowania modelu
+
+```{r}
+rocobj2 <- roc(model.2.1$y, model.2.1$fitted.values)
+rocobj2_t <- roc(test$quality.cat, predict(model.2.1, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj2, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj2_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj2, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 8. Krzywa ROC dla zbioru treningowego, modelu 2") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj2_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 9. Krzywa ROC dla zbioru testowego, modelu 2") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+```{r}
+p2 <- coords(rocobj2, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.2.1$fitted.values>p2, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.2.1$y, model.2.1$fitted.values)),'\n')
+
+
+p2_t <- coords(rocobj2_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.2.1, test, type = "response")>p2_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test$quality.cat, predict(model.2.1, test, type = "response"))),'\n')
+```
+
+Wyliczone miary oceny predykcji prezentowały się następująco:
+
+* `accuracy` - W przypadku tego modelu jest to `69.3%` dla zbioru treningowego oraz `72.4%` dla zbioru testowego
+* `no information rate (NIR)` - W przypadku badanego modelu jest to `52%` dla zbioru treningowego oraz `55.7%` dla zbioru testowego
+* `sensitivity` - Porównując wartość czułości dla naszych zbiorów, jest to `83.1%` dla treningowego oraz `83.8%` dla testowego
+* `specificity` - W przypadku zbioru treningowego jest to `56.6%`, a testowego `58%`.
+* `positive predictive value` - Dla zbioru treningowego jest to `63.9%` a dla zbioru testowego `71.5%`.
+* `negative predictive value` - Dla zbioru treningowego jest to `78.5%` a dla zbioru testowego `74.1%`.
+* `prevalence` - Dla zbioru testowego mamy więc `48%` jedynek a w zbiorze testowym `55.7%`.
+* `detection rate` - w naszym zbiorze treningowym jest to `40%`, a w testowym `46.6`.
+* `detection prevalence` - W naszym zbiorze treningowym wynosi ono `62.5%`, a w testowym `65.2%`.
+* `balanced accuracy` - W przypadku tego modelu jest to `70%` dla zbioru treningowego oraz `71%` dla zbioru testowego.
+
+Wykresy ROC dla zbiorów testowego i treningowego są do siebie zbliżone (ryc. 8 i 9), co świadczy o braku zjawiska niedouczenia czy przeuczenia.
+
+Parametr `AUC` wyniósł około `0.78` w obu zbiorach co świadczy o dostatecznym dopasowaniu modelu do danych.
+
+Wykonamy wyliczenie eksponentów podniesionych do potęgi będącej wartością współczynników tego modelu
+
+### Interpretacja współczynników
+
+```{r}
+exp(model.2.1$coefficients[1])
+
+(exp(model.2.1$coefficients[2])-1)*100
+
+(exp(model.2.1$coefficients[3])-1)*100
+```
+
+Interpretacja jest więc następująca.
+
+`wyraz wolny` - $e^{-7.2679020} = 0.000697574$ interpretuje się jako szansę na trafienie dobrego wina w grupie z zerową zawartością alkoholu oraz zerową wartością negatywnej kwaskowatości wina. W naszym zbiorze danych ta interpretacja nie ma sensu, gdyż zbiór nie zawierał win bezalkoholowych oraz win z zerową negatywną kwaskowatością.
+
+`volatile.acidity` - $(e^{-3.7246501}-1)\cdot100\% = -97.58785\%$, jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jeden gram na litr, to szansa na trafienie dobrego wina maleje średnio o `97.6%`, ceteris paribus. Ma to sens, gdyż tak jak nazwa wskazuje, ten parametr negatywnie wpływa na smak wina. Jeśli spojrzymy na podsumowanie statystyk opisowych naszych zmiennych, zaobserwujemy, że zmienna `volatile.acidity` przyjmuje wartości z przedziału 0.08 i 1.58. Dlatego też mierzenie wzrostu o jeden gram na litr nie jest najlepszym pomysłem i lepiej sprawdzić, jak będzie zachowywać się szansa przy wzroście o 0.1 grama na litr. Poniżej zostanie wyliczony odpowiedni eksponent.
+
+```{r}
+(exp(model.2.1$coefficients[2]/10)-1)*100
+```
+
+Interpretacja jest teraz następująca jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jedną dziesiątą grama na litr, to szansa na trafienie dobrego wina maleje średnio o $(e^{\frac{-3.7246501}{10}}-1)\cdot100\% = -31.09662\%$ (procent bierzemy z wartością bezwzględną), ceteris paribus.
+
+`alcohol` - $(e^{0.85444}-1)\cdot100\% = 140.9941\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `141%`, ceteris paribus.
+
+Następnym krokiem będzie wykonanie analizy dla wszystkich trzech zmiennych bez interakcji.
+
+## Modele z trzema zmiennymi objaśniającymi, bez interakcji
+
+### Specyfikacja modeli
+
+```{r}
+cat("Model 1 - quality.cat ~ volatile.acidity + alcohol + total.sulfur.dioxide")
+model.3.1 <- glm(quality.cat ~ volatile.acidity + alcohol + total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.3.1)
+```
+
+### Krzywe ROC oraz analiza dobroci dopasowania modelu
+
+```{r}
+rocobj3 <- roc(model.3.1$y, model.3.1$fitted.values)
+rocobj3_t <- roc(test$quality.cat, predict(model.3.1, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj3, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj3_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj3, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 10. Krzywa ROC dla zbioru treningowego, modelu 3") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj3_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 11. Krzywa ROC dla zbioru testowego, modelu 3") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+```{r}
+p3 <- coords(rocobj3, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.3.1$fitted.values>p3, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.3.1$y, model.3.1$fitted.values)),'\n')
+
+
+p3_t <- coords(rocobj3_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.3.1, test, type = "response")>p3_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test$quality.cat, predict(model.3.1, test, type = "response"))),'\n')
+```
+
+Wyliczone miary oceny predykcji przyjęły następujące wartości:
+
+* `accuracy` - W przypadku tego modelu jest to `70.2%` dla zbioru treningowego oraz `73.4%` dla zbioru testowego
+* `no information rate (NIR)` - W przypadku badanego modelu jest to `50.3%` dla zbioru treningowego oraz `57.7%` dla zbioru testowego
+* `sensitivity` - W przypadku zbioru treningowego jest to `82.5%`, a testowego `83.5%`.
+* `positive predictive value` - Dla zbioru treningowego jest to `57.8%` a dla zbioru testowego `59.7%`.
+* `negative predictive value` - Dla zbioru treningowego jest to `76.6%` a dla zbioru testowego `73.8%`.
+* `prevalence` - Dla zbioru testowego mamy więc `50.3%` jedynek a w zbiorze testowym `57.7%`.
+* `detection rate` - w naszym zbiorze treningowym jest to `41.5%`, a w testowym `48.2%`.
+* `detection prevalence` - W naszym zbiorze treningowym wynosi ono `62.5%`, a w testowym `65.2%`.
+* `balanced accuracy` - W przypadku tego modelu jest to `70.1%` dla zbioru treningowego oraz `71.6%` dla zbioru testowego.
+
+Wykresy ROC (wykresy 10 i 11) oraz miary świadczą o braku przeuczenia lub niedouczenia modelu.
+
+Parametr `AUC` kształtował się na poziomie `0.78` - model jest dostatecznie dopasowany do danych.
+
+### Interpretacja współczynników
+
+Wartości eksponentów kształtowały się następująco
+
+```{r}
+exp(model.3.1$coefficients[1])
+
+(exp(model.3.1$coefficients[2]/10)-1)*100
+
+(exp(model.3.1$coefficients[3])-1)*100
+
+(exp(model.3.1$coefficients[4])-1)*100
+```
+
+Interpretacja jest więc następująca:
+
+`wyraz wolny` - $e^{-6.318942102} = 0.001801849$ interpretuje się jako szansę na trafienie dobrego wina w grupie z zerową zawartością wszystkich trzech parametrów. Taka sytuacja w naszym zbiorze nie występuje, więc ten parametr nie ma sensownej interpretacji.
+
+`volatile.acidity` - $(e^{\frac{-4.212983883}{10}}-1)\cdot100\% = -34.38057\%$, jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jedną dziesiątą grama na litr, to szansa na trafienie dobrego wina maleje średnio o `34.4%`, ceteris paribus. Tak jak poprzednio, interpretacja ta zgadza się z 'chłopsko-rozumowym' podejściem, ten parametr negatywnie wpływa na smak wina.
+
+`alcohol` - $(e^{0.836879532}-1)\cdot100\% = 130.915\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `131%`, ceteris paribus.
+
+`total.sulfur.dioxide` - $(e^{-0.002900867}-1)\cdot100\% = -0.2896663\%$, jeżeli zawartość sumarycznego dwutlenku siarki w winie wzrośnie o jedną jednostkę na milion, to szansa na trafienie dobrego wina maleje średnio o `0.29%`, ceteris paribus. Jednostka ppm jest bardzo małą jednostką (rzędu $10^{-6}$), dlatego też ten procent jest tak mały. W naszym zbiorze danych, ta zmienna przyjmuje wartości między 6 a 440, dlatego też powtórzymy to wyliczenie dla 10 jednostek na milion.
+
+```{r}
+(exp(10*model.3.1$coefficients[4])-1)*100
+```
+
+Teraz ta interpretacja prezentuje się następująco - jeżeli zawartość sumarycznego dwutlenku siarki w winie wzrośnie o dziesięć jednostek na milion, to szansa na trafienie dobrego wina maleje średnio o $(e^{10\cdot-0.002900867}-1)\cdot100\% = -2.859196\%$ (do interpretacji biorę wartość bezwzględną tego procenta), ceteris paribus.
+
+Następny etap to stworzenie modeli z dwiema zmiennymi objaśniającymi, jednak teraz z interakcjami.
+
+## Modele z dwiema zmiennymi objaśniającymi, z interakcjami
+
+### Specyfikacja modeli
+
+```{r}
+cat("Model 1 - quality.cat ~ volatile.acidity * alcohol")
+model.4.1 <- glm(quality.cat ~ volatile.acidity * alcohol, data = train, family = binomial(link=logit))
+summary(model.4.1)
+cat("Model 2 - quality.cat ~ total.sulfur.dioxide * alcohol")
+model.4.2 <- glm(quality.cat ~ total.sulfur.dioxide * alcohol, data = train, family = binomial(link=logit))
+summary(model.4.2)
+```
+
+Drugi model nie jest prawidłowy ze względu na brak istotności zmiennych, model z samą zmienną `alcohol` był już rozpatrywany w tej analizie. W związku z tym, do dalszego badania pozostawimy model 1.
+
+### Krzywe ROC oraz analiza dobroci dopasowania modelu
+
+```{r}
+rocobj4 <- roc(model.4.1$y, model.4.1$fitted.values)
+rocobj4_t <- roc(test$quality.cat, predict(model.4.1, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj4, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj4_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj4, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 12. Krzywa ROC dla zbioru treningowego, modelu 4") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj4_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 13. Krzywa ROC dla zbioru testowego, modelu 4") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+```{r}
+p4 <- coords(rocobj4, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.4.1$fitted.values>p4, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.4.1$y, model.4.1$fitted.values)),'\n')
+
+
+p4_t <- coords(rocobj4_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.4.1, test, type = "response")>p4_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test$quality.cat, predict(model.4.1, test, type = "response"))),'\n')
+```
+
+Miary dokładności predykcji dla tego modelu kształtowały się następująco: 
+
+* `accuracy` - W przypadku tego modelu jest to `70.7%` dla zbioru treningowego oraz `73.1%` dla zbioru testowego
+* `no information rate (NIR)` -  W przypadku badanego modelu jest to `52.4%` dla zbioru treningowego oraz `57` dla zbioru testowego
+* `sensitivity` - Porównując wartość czułości dla naszych zbiorów, jest to `81.6%` dla treningowego oraz `83.6%` dla testowego
+* `specificity` - W przypadku zbioru treningowego jest to `58.6%`, a testowego `59.2%`.
+* `positive predictive value` - Dla zbioru treningowego jest to `68.5%` a dla zbioru testowego `73.1%`.
+* `negative predictive value` - Dla zbioru treningowego jest to `74.3%` a dla zbioru testowego `73.2%`.
+* `prevalence` - Dla zbioru testowego mamy więc `52.4%` jedynek a w zbiorze testowym `57%`.
+* `detection rate` - w naszym zbiorze treningowym jest to `42.8%`, a w testowym `47.7%`.
+* `detection prevalence` - W naszym zbiorze treningowym wynosi ono `62.5%`, a w testowym `65.2%`.
+* `balanced accuracy` - W przypadku tego modelu jest to `70.1%` dla zbioru treningowego oraz `71.4%` dla zbioru testowego.
+
+Wyliczone miary, AUC (będące na poziomie `0.79`, świadczące o dostatecznym dopasowaniu modelu do danych) oraz wygląd wykresów ROC (widoczne na rycinie 12 i 13) dla obu zbiorów są podobne, co świadczy o modelu dopasowanym do danych w dobry sposób.
+
+### Interpretacja współczynników
+
+Wartości eksponentów są następujące
+
+```{r}
+exp(model.4.1$coefficients[1])
+
+(exp(model.4.1$coefficients[2]/10)-1)*100
+
+(exp(model.4.1$coefficients[3])-1)*100
+
+(exp(model.4.1$coefficients[4])-1)*100
+```
+
+Interpretacja jest więc następująca:
+
+`wyraz wolny` - $e^{-3.5536470} = 0.001801849$ interpretuje się jako szansę na trafienie dobrego wina w grupie z zerową zawartością obu parametrów. Taka sytuacja w naszym zbiorze nie występuje, więc ten parametr nie ma sensownej interpretacji.
+
+`volatile.acidity` - $(e^{\frac{-14.6221175}{10}}-1)\cdot100\% = -76.82768\%$, jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jedną dziesiątą grama na litr, to szansa na trafienie dobrego wina maleje średnio o `76.8%` w grupie z zerową zawartością alkoholu, ceteris paribus. Zauważmy, że taka wartość nie ma sensu w naszym zbiorze danych, gdyż nie mamy w zbiorze danych win bezalkoholowych.
+
+`alcohol` - $(e^{0.5173521}-1)\cdot100\% = 67.75796\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `67.8%` w grupie win z zerową zawartością negatywnej kwaskowatości, ceteris paribus. Tak jak poprzednio, taka wartość nie ma sensu gdyż nie mamy w zbiorze danych win z zerową negatywną kwaskowatością.
+
+interakcja zmiennych `volatile.acidity` i `alcohol` - $(e^{1.0572746}-1)\cdot100\% = 187.8515\%$, iloraz szans na bycie dobrym winem przy przyroście zawartości negatywnej kwaskowatości o 1 gram na litr jest większy o `187%` dla win o zawartości alkoholu o p+1 procent niż dla win p procentowych. Ciężko jest na podstawie tej zależności wysnuć wnioski mające odniesienie do rzeczywistości, ciężko znaleźć wytłumaczenie leżące za relacją negatywnej kwaskowatości oraz alkoholu wpływające na dobroć wina. Moja wiedza ekspercka dotycząca wina nie jest na tyle duża aby móc wysnuć daleko idące wnioski z tej interakcji.
+
+Interpretacje zmiennych bez interakcji nie mają sensu w naszym przypadku gdyż nie mamy win o "zerowych" parametrach. Receptą na to okazuje się stworzenie modelu, w którym zmiennymi objaśniającymi będą zmodyfikowane zmienne `alcohol` oraz `volatile.acidity`. Zostanie od nich odjęta minimalna wartość odpowiedniej zmiennej, tak aby interpretacja win o zerowej zawartości alkoholu czy kwaskowatości teraz oznaczała wino o minimalnej zawartości tego parametru. Dzięki temu, uzyskamy sensowniejszą analizę.
+
+#### Zmodyfikowany model z jedną interakcją
+
+```{r}
+train.temp = train %>% dplyr::select(alcohol, volatile.acidity, quality.cat) %>% mutate(alcohol = alcohol - min(alcohol), volatile.acidity = volatile.acidity - min(volatile.acidity))
+test.temp = test %>% dplyr::select(alcohol, volatile.acidity, quality.cat) %>% mutate(alcohol = alcohol - min(alcohol), volatile.acidity = volatile.acidity - min(volatile.acidity))
+
+cat("Model 3,  zmodyfikowane zmienne")
+model.4.3 <- glm(quality.cat ~ volatile.acidity * alcohol, data = train.temp, family = binomial(link=logit))
+summary(model.4.3)
+
+rocobj4t <- roc(model.4.3$y, model.4.3$fitted.values)
+rocobj4t_t <- roc(test.temp$quality.cat, predict(model.4.3, test.temp, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj4t, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj4t_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj4t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 14. Krzywa ROC dla zbioru treningowego, modelu 4 zmodyfikowanego") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj4t_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 15. Krzywa ROC dla zbioru testowego, modelu 4 zmodyfikowanego") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+p4t <- coords(rocobj4t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train.temp$quality.cat, as.factor(ifelse(model.4.3$fitted.values>p4t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.4.3$y, model.4.3$fitted.values)),'\n')
+
+
+p4t_t <- coords(rocobj4t_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test.temp$quality.cat, as.factor(ifelse(predict(model.4.3, test.temp, type = "response")>p4t_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test.temp$quality.cat, predict(model.4.3, test.temp, type = "response"))),'\n')
+```
+Wartości miar jakości predykcji kształtują się na podobnym poziomie co dla modelu ze zmiennymi niezmodyfikowanymi. Ryciny 13 i 14 obrazują podobieństwo dwóch krzywych ROC do siebie.
+
+```{r}
+exp(model.4.3$coefficients[1])
+
+(exp(model.4.3$coefficients[2]/10)-1)*100
+
+(exp(model.4.3$coefficients[3])-1)*100
+
+(exp(model.4.3$coefficients[4])-1)*100
+```
+
+Interpretacja współczynników tego modelu jest następująca:
+
+`wyraz wolny` - interpretuje się jako szansę na trafienie dobrego wina w grupie z zerową zawartością obu parametrów. Dzięki przemianowaniu zmiennych, taka sytuacja może teoretycznie wystąpić, ponieważ może trafić się wino z minimalną zawartością obu parametrów. Szansa na trafienie dobrego wina wynosi $0.99% w grupie win z minimalną zawartością alkoholu i negatywnej kwaskowatości w winie.
+
+`volatile.acidity` - $-42.60816\%$, jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jedną dziesiątą grama na litr, to szansa na trafienie dobrego wina maleje średnio o `42.6%` w grupie z minimalną zawartością alkoholu w winie ($8\%$), ceteris paribus.
+
+`alcohol` - $94.03043\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `94.03%` w grupie win z minimalną zawartością negatywnej kwaskowatości ($0.08$), ceteris paribus
+
+interakcja zmiennych `volatile.acidity` i `alcohol` - $126.7652\%$, iloraz szans na bycie dobrym winem przy przyroście zawartości negatywnej kwaskowatości o 1 gram na litr jest większy o `127%` dla win o zawartości alkoholu o p+1 procent niż dla win p procentowych. 
+
+W związku z tym, że ten model wyszedł bardzo podobny (a nawet trochę lepszy) od modelu z niezmodyfikowanymi zmiennymi, to będzie on rozpatrywany w dalszej analizie przez to, że wszystkie interpretacje mają sens w tym scenariuszu.
+
+Ostatnim etapem będzie stworzenie modeli z trzema zmiennymi objaśnianymi, z różnymi wariantami interakcji.
+
+## Modele z trzema zmiennymi objaśniającymi, z interakcjami
+
+### Specyfikacja modeli
+
+```{r}
+cat("Model 1 - quality.cat ~ volatile.acidity * alcohol + total.sulfur.dioxide")
+model.5.1 <- glm(quality.cat ~ volatile.acidity * alcohol + total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.5.1)
+cat("Model 2 - quality.cat ~ volatile.acidity + alcohol * total.sulfur.dioxide")
+model.5.2 <- glm(quality.cat ~ volatile.acidity + alcohol * total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.5.2)
+cat("Model 3 - quality.cat ~ volatile.acidity * total.sulfur.dioxide + alcohol")
+model.5.3 <- glm(quality.cat ~ volatile.acidity * total.sulfur.dioxide + alcohol, data = train, family = binomial(link=logit))
+summary(model.5.3)
+cat("Model 4 - quality.cat ~ volatile.acidity * alcohol * total.sulfur.dioxide")
+model.5.4 <- glm(quality.cat ~ volatile.acidity * alcohol * total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.5.4)
+cat("Model 5 - quality.cat ~ (volatile.acidity + alcohol + total.sulfur.dioxide)^2")
+model.5.5 <- glm(quality.cat ~ (volatile.acidity + alcohol + total.sulfur.dioxide)^2, data = train, family = binomial(link=logit))
+summary(model.5.5)
+```
+
+Ze względu na brak istotności interakcji w modelach 2 oraz 5, porzucamy te modele i zbadamy, który z pozostałych modeli jest najlepszy.
+
+### Kryteria oceny modelu
+
+```{r}
+rbind(
+  model.5.1=ocena_modelu(model.5.1), 
+  model.5.3=ocena_modelu(model.5.3), 
+  model.5.4=ocena_modelu(model.5.4))
+
+```
+
+Zgodnie z przyjętymi kryteriami, okazuje się, że model pełny (ze wszystkimi zmiennymi i ich interakcjami) jest najlepszy spośród tych trzech modeli. Zostanie teraz oceniona jego jakość predykcyjna.
+
+### Krzywe ROC oraz analiza dobroci dopasowania modelu
+
+```{r}
+rocobj5 <- roc(model.5.4$y, model.5.4$fitted.values)
+rocobj5_t <- roc(test$quality.cat, predict(model.5.4, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(rocobj5, "best")$threshold,"dla zbioru treninowego oraz",coords(rocobj5_t, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(rocobj5, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 16. Krzywa ROC dla zbioru treningowego, modelu 5") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(rocobj5_t, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 17. Krzywa ROC dla zbioru testowego, modelu 5") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+```{r}
+p5 <- coords(rocobj5, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji  - próba ucząca\n")
+caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.5.4$fitted.values>p5, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru treningowego',as.numeric(auc(model.5.4$y, model.5.4$fitted.values)),'\n')
+
+
+p5_t <- coords(rocobj5_t, "best")$threshold
+cat("Tablica trafności oraz miary jakości predykcji - próba testowa\n")
+caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.5.4, test, type = "response")>p5_t, 1, 0)), positive='1')
+cat('Wartość AUC dla zbioru testowego',as.numeric(auc(test$quality.cat, predict(model.5.4, test, type = "response"))),'\n')
+```
+
+Ryciny 16 i 17 obrazują wykresy ROC dla zbiorów testowego i treningowego. Są one do siebie zbliżone, co świadczy o podobnym dopasowaniu modelu do danych (nie mamy zjawiska niedouczenia czy przeuczenia).
+
+Wyliczone miary oceny predykcji prezentowały się następująco:
+
+* `accuracy` -  W przypadku tego modelu jest to `72.2%` dla zbioru treningowego oraz `74.6%` dla zbioru testowego
+* `no information rate (NIR)` - W przypadku badanego modelu jest to `53.9%` dla zbioru treningowego oraz `59.4%` dla zbioru testowego
+* `sensitivity` - Porównując wartość czułości dla naszych zbiorów, jest to `82.2%` dla treningowego oraz `83.5%` dla testowego
+* `specificity` - W przypadku zbioru treningowego jest to `60.6%`, a testowego `61.5%`.
+* `positive predictive value` - Dla zbioru treningowego jest to `70.9%` a dla zbioru testowego `76.1%`.
+* `negative predictive value` - Dla zbioru treningowego jest to `74.5%` a dla zbioru testowego `71.8%`.
+* `prevalence` - Dla zbioru testowego mamy więc `53.9%` jedynek a w zbiorze testowym `59.4%`.
+* `detection rate` - w naszym zbiorze treningowym jest to `44.3%`, a w testowym `49.6%`.
+* `detection prevalence` - W naszym zbiorze treningowym wynosi ono `62.5%`, a w testowym `65.2%`.
+* `balanced accuracy` - W przypadku tego modelu jest to `71.4%` dla zbioru treningowego oraz `72.5%` dla zbioru testowego.
+
+Parametr `AUC` wyniósł prawie `0.8` w obu zbiorach co świadczy o dobrym dopasowaniu modelu do danych.
+
+Zakończyliśmy tę sekcję doborem pięciu najlepszych modeli z poszczególnych podkategorii, bazujących na liczbie zmiennych objaśnianych. 
+
+### Interpretacja współczynników
+
+Wartości eksponentów są następujące
+
+```{r}
+exp(model.5.4$coefficients[1])
+
+(exp(model.5.4$coefficients[2]/10)-1)*100
+
+(exp(model.5.4$coefficients[3])-1)*100
+
+(exp(10*model.5.4$coefficients[4])-1)*100
+
+(exp(model.5.4$coefficients[5])-1)*100
+
+(exp(model.5.4$coefficients[6])-1)*100
+
+(exp(model.5.4$coefficients[7])-1)*100
+
+(exp(model.5.4$coefficients[8])-1)*100
+```
+
+Interpretacja jest więc następująca.
+
+`wyraz wolny` - $e^{-12.229113510} = 4.886113\cdot10^{-6}$ interpretuje się jako szansę na trafienie dobrego wina w grupie z zerową zawartością obu parametrów. Taka sytuacja w naszym zbiorze nie występuje, więc ten parametr nie ma sensownej interpretacji.
+
+`volatile.acidity` - $(e^{\frac{10.546867315}{10}}-1)\cdot100\% = 187.1076\%$, jeżeli zawartość negatywnej kwaskowatości w winie wzrośnie o jeden gram na litr, to szansa na trafienie dobrego wina rośnie średnio o `187.1%` w grupie z zerową zawartością alkoholu w winie i zerową zawartością sumarycznego dwutlenku siarki, ceteris paribus. Co warte zauważenia - odwróciła się interpretacja tej zmiennej. W poprzednich modelach wzrost tej zmiennej powodował spadek szansy, a tutaj powoduje wzrost.
+
+`alcohol` - $(e^{1.314260022}-1)\cdot100\% = 272.1996\%$, jeżeli zawartość alkoholu w winie wzrośnie o jeden procent, to szansa na trafienie dobrego wina wzrasta średnio o `272.2%` w grupie z zerową zawartością sumarycznego dwutlenku siarki oraz z zerową zawartością negatywnej kwaskowatości, ceteris paribus.
+
+`total.sulfur.dioxide` - $(e^{10\cdot0.091839619}-1)\cdot100\% = 150.5269\%$, jeżeli zawartość sumarycznego dwutlenku siarki w winie wzrośnie o dziesięć jednostek na milion, to szansa na trafienie dobrego wina maleje średnio o `150.5%` w grupie z zerową zawartością alkoholu oraz z zerową zawartością negatywnej kwaskowatości, ceteris paribus.
+
+Interakcje:
+
+interakcja zmiennych `volatile.acidity` i `alcohol` - $(e^{-1.196003170}-1)\cdot100\% = -69.75996\%$, iloraz szans na bycie dobrym winem przy przyroście zawartości negatywnej kwaskowatości o 1 gram na litr jest mniejszy o `69.8%` dla win o zawartości alkoholu o p+1 procent niż dla win p procentowych w grupie win o zerowej sumarycznej zawartości dwutlenku siarki. 
+
+interakcja zmiennych `volatile.acidity` i `total.sulfur.dioxide` - $(e^{-0.290577379}-1)\cdot100\% = -25.21683\%$, iloraz szans na bycie dobrym winem przy przyroście zawartości negatywnej kwaskowatości o 1 gram na litr jest mniejszy o `25.2%` dla win o zawartości sumarycznego dwutlenku siarki o p+1 ppm niż dla win o zawartości p ppm tego związku w grupie win o zerowej zawartości alkoholu. 
+
+interakcja zmiennych `total.sulfur.dioxide` i `alcohol` - $(e^{-0.008238037}-1)\cdot100\% = -0.8204197\%$, iloraz szans na bycie dobrym winem przy przyroście zawartości sumarycznej zawartości dwutlenku siarki o 1 ppm jest większy o `0.82%` dla win o zawartości alkoholu o p+1 procent niż dla win p procentowych w grupie win o zerowej zawartości negatywnej kwaskowatości. 
+
+interakcja wszystkich trzech zmiennych - $(e^{0.025379185}-1)\cdot100\% = 2.570398\%$, iloraz szans ilorazu szans na bycie dobrym winem przy przyroście zawartości negatywnej kwaskowatości o 1 gram na litr jest większy o dla win o zawartości alkoholu o p+1 procent do dla win p procentowych jest o `2.57%` większy dla win o zawartości z+1 dwutlenku siarki niż dla win o zawartości z ppm.
+
+Tak jak w poprzednim modelu, ciężko jest na podstawie tych interakcji wysnuć wnioski mające odniesienie do rzeczywistości. Jest to model czysto matematyczny, który nie będzie miał sensownego odniesienia do rzeczywistości. Dodatkowo, jedyna sensowna interpretacja jest dla interakcji trzech zmiennych, ze względu na fakt, że nie mamy win o zerowej zawartości któregokolwiek z parametrów. Interakcja ta jest bardzo ciężka w interpretacji matematycznej jak i abstrakcyjnej, dlatego też posłużymy się modelem ze zmodyfikowanymi zmiennymi, tak jak w poprzednim scenariuszu.
+
+#### Zmodyfikowany model z dwiema interakcjami
+
+
+
+```{r}
+train.temp = train %>% dplyr::select(alcohol, volatile.acidity, total.sulfur.dioxide, quality.cat) %>% mutate(alcohol = alcohol - min(alcohol), volatile.acidity = volatile.acidity - min(volatile.acidity), total.sulfur.dioxide = min(total.sulfur.dioxide))
+test.temp = test %>% dplyr::select(alcohol, volatile.acidity, total.sulfur.dioxide, quality.cat) %>% mutate(alcohol = alcohol - min(alcohol), volatile.acidity = volatile.acidity - min(volatile.acidity), total.sulfur.dioxide = min(total.sulfur.dioxide))
+
+cat("Model 5 - zmodyfikowane zmienne")
+model.5.6 <- glm(quality.cat ~ volatile.acidity * alcohol * total.sulfur.dioxide, data = train, family = binomial(link=logit))
+summary(model.5.6)
+```
+
+Nie decyduje się na użycie tego modelu ze względu na brak istotności statystycznej parametru `volatile.acidity`.
+
+Następną sekcją będzie wybranie najlepszego modelu spośród pięciu.
+
+## Podsumowanie analizy logitowej
+
+W dwóch tabelach poniżej przypomnieliśmy wyniki kryteriów jakości modeli oraz miar oceny jakości predykcji modeli. Na tej podstawie wybierzemy najlepszy z modeli.
+
+```{r}
+rbind(
+  model.1.3=ocena_modelu(model.1.3), 
+  model.2.1=ocena_modelu(model.2.1), 
+  model.3.1=ocena_modelu(model.3.1), 
+  model.4.3=ocena_modelu(model.4.3), 
+  model.5.4=ocena_modelu(model.5.4))
+
+conf.mat <- cbind(
+  model.1.3.trening <- data.frame(caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.1.3$fitted.values>p1, 1, 0)), positive='1')$byClass),
+  model.1.3.test <- data.frame(caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.1.3, test, type = "response")>p1_t, 1, 0)), positive='1')$byClass),
+  model.1.3.różnica <- data.frame(model.1.3.trening - model.1.3.test),
+  
+  model.2.1.trening <- data.frame(caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.2.1$fitted.values>p2, 1, 0)), positive='1')$byClass),
+  model.2.1.test <- data.frame(caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.2.1, test, type = "response")>p2_t, 1, 0)), positive='1')$byClass),
+  model.2.1.różnica <- data.frame(model.2.1.trening - model.2.1.test),
+  
+  model.3.1.trening <- data.frame(caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.3.1$fitted.values>p3, 1, 0)), positive='1')$byClass),
+  model.3.1.test <- data.frame(caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.3.1, test, type = "response")>p3_t, 1, 0)), positive='1')$byClass),
+  model.3.1.różnica <- data.frame(model.3.1.trening - model.3.1.test),
+  
+  model.4.3.trening <- data.frame(caret::confusionMatrix(train.temp$quality.cat, as.factor(ifelse(model.4.3$fitted.values>p4t, 1, 0)), positive='1')$byClass),
+  model.4.3.test <- data.frame(caret::confusionMatrix(test.temp$quality.cat, as.factor(ifelse(predict(model.4.3, test.temp, type = "response")>p4t_t, 1, 0)), positive='1')$byClass),
+  model.4.3.różnica <- data.frame(model.4.3.trening - model.4.3.test),
+  
+  model.5.4.trening <- data.frame(caret::confusionMatrix(train$quality.cat, as.factor(ifelse(model.5.4$fitted.values>p5, 1, 0)), positive='1')$byClass),
+  model.5.4.test <- data.frame(caret::confusionMatrix(test$quality.cat, as.factor(ifelse(predict(model.5.4, test, type = "response")>p5_t, 1, 0)), positive='1')$byClass),
+  model.5.4.różnica <- data.frame(model.5.4.trening - model.5.4.test)
+)
+
+colnames(conf.mat) <- c("model.1.3.trening", "model.1.3.test", "model.1.3.różnica","model.2.1.trening", "model.2.1.test", "model.2.1.różnica","model.3.1.trening", "model.3.1.test", "model.3.1.różnica","model.4.3.trening", "model.4.3.test", "model.4.3.różnica","model.5.4.trening", "model.5.4.test", "model.5.4.różnica")
+
+data.frame(t(conf.mat)) %>% dplyr::select(-F1)
+```
+
+Różnice między zbiorami treningowymi i testowymi są niewielkie dla każdego modelu i każdej miary, co świadczy o tym że wyestymowane modele dobrze dopasowały się do danych, ale nie zbyt dobrze co mogłoby zakłamywać rzeczywistość.
+
+Aby wybrać najlepszy model spośród tych pięciu należy zadać sobie pytanie - w jakim celu chcemy użyć tego modelu? Pod względem miar oceny modelu, najlepszym modelem okazał się model pełny - ze wszystkimi badanymi zmiennymi i ich interakcjami. Jak wspominaliśmy wyżej, jest to model czysto matematyczny, który ciężko jest zinterpretować w taki sposób, aby go odnieść do rzeczywistości i jedynie interakcja trzech zmiennych niesie wartościową informację o zbiorze danych. Model z dwoma zmodyfikowanymi predyktorami jest lepszy pod tym względem, że każdy z jego parametrów da się zinterpretować w zbiorze danych. Nie zda to się nam jednak na nic przez fakt, że musielibyśmy znaleźć wino z zawartością $8\%$ alkoholu oraz $0.08$ negatywnej kwaskowatości co w sytuacji 'sklepowej' jest niemożliwe do osiągnięcia.
+
+Spośród modeli, które możemy odnieść do życia najlepszym jest model wyjaśniającym dobroć wina względem wszystkich trzech zmiennych, bez interakcji. Minusem tego modelu jednak jest fakt, że informacja o negatywnej kwaskowatości i zawartości sumarycznego dwutlenku siarki nie jest dostępna bez zbadania właściwości fizykochemicznych wina. Oznacza to, że nie jesteśmy w stanie zadecydować o tym czy dane wino jest dobre czy nie w sklepie, bazując na tych współczynnikach. 
+
+Jedynym modelem, który nam na to pozwala jest model przewidujący szansę na natrafienie dobrego wina poprzez zawartość procentową alkoholu w nim. Mamy tutaj jasną zależność - im więcej alkoholu w winie, tym większa szansa na to, że jest to dobre wino.
+
+W naszym zbiorze danych niestety nie było zmiennych, które mogłyby stworzyć model mogący pomóc nam wybrać wino (poza typem, który okazał się słabo skorelowany z jakością oraz zawartością alkoholu, która była modelowana). Aby taki model mógł okazać się przydatny musielibyśmy mieć informację o kraju pochodzenia, gatunku winogrona, długości fermentacji czy roku produkcji. Dzięki temu, patrząc na etykietę wina i mając w pamięci interpretację naszego potencjalnego modelu uzyskalibyśmy informację o szansie na to czy nasze wino jest dobre. Ze względu na brak takich informacji, nasze rozpatrywane modele są abstrakcyjne i naukowe. Tym samym kończymy analizę modeli logitowych i przechodzimy do analizy modeli probitowych.
+
+# Analiza modeli Probitowych
+
+Kolejna sekcja poświęcona zostanie dopasowaniu modeli regresji probitowej. Wykorzystamy możliwe kombinacje zmiennych tak, by wybrać z nich najlepszy możliwy model.
+
+W pierwszej kolejności zajmę się prostymi modelami czyli; 
+
+* Modelem zerowym
+* Modelami z  kolejno każdym wybranym wcześniej predyktorem
+
+```{r}
+train$quality.cat <- relevel(train$quality.cat, ref = "0")
+
+
+cat("Model 0 - quality.cat ~ intercept")
+model_prob_zero <- glm(quality.cat ~ 1, data = train, family = binomial(link=probit))
+summary(model_prob_zero)
+
+cat("Model 1 - quality.cat ~ volatile.acidity")
+model_prob_acid <- glm(quality.cat ~ volatile.acidity, data = train, family = binomial(link=probit))
+summary(model_prob_acid)
+
+cat("Model 2 - quality.cat ~ total.sulfur.dioxide")
+model_prob_diox <- glm(quality.cat ~ total.sulfur.dioxide, data = train, family = binomial(link=probit))
+summary(model_prob_diox)
+
+cat("Model 3 - quality.cat ~ alcohol")
+model_prob_alco <- glm(quality.cat ~ alcohol, data = train, family = binomial(link=probit))
+summary(model_prob_alco)
+
+cat("Model 4 - quality.cat ~ density")
+model_prob_dens <- glm(quality.cat ~ density, data = train, family = binomial(link=probit))
+summary(model_prob_dens)
+```
+
+Wszystkie wyszczególnione zmienne mają istotny wpływ na jakość wina, przy czym posługująć się interpretacją współczynników regresji probitowej jedyną stymulantą jakości wina wydaje się stężenie alkoholu. Na podstawie kryterium AIC można przypuszczać że model zawierający 'alcohol' będzie finalnie modelem najlepszym. Przy czym należy pamiętać że złym pomysłem będzie mieszać 'alcohol' z 'density'
+
+
+Warto  dla potwierdzenia sprawdzić również porównanie dobroci powyższych modeli w jednym zestawieniu
+
+```{r}
+ocena_modelu<- function(model) {
+  kryterium_AIC <- c(model$aic)
+  dew.reszt <- model$deviance
+  dew.zer <- model$null.deviance
+  McFadden<-pR2(model)[4]
+  Cragg_Uhler<-pR2(model)[6]
+  ocena <- data.frame(kryterium_AIC, dew.reszt, dew.zer, McFadden, Cragg_Uhler)
+  return(ocena)
+}
+```
+
+```{r}
+rbind(
+ mod_zero = ocena_modelu(model_prob_zero), 
+ mod_acid = ocena_modelu(model_prob_acid), 
+ mod_alco = ocena_modelu(model_prob_alco),
+ mod_diox = ocena_modelu(model_prob_diox),
+ mod_dens = ocena_modelu( model_prob_dens))
+```
+
+Jak widać w każdym przypadku wygrywa model 'alco'.
+
+Sprawdźmy teraz modele z kombinacjami zmiennych, pomijając model alco + denisty gdyż zmienne te korelują ze sobą.
+
+```{r}
+
+cat("Model 1 - quality.cat ~ volatile.acidity + total.sulfur.dioxide")
+model_v_t <- glm(quality.cat ~ volatile.acidity + total.sulfur.dioxide, data = train, family = binomial(link=probit))
+summary(model_v_t)
+
+cat("Model 2 - quality.cat ~ volatile.acidity + alcohol")
+model_v_a <- glm(quality.cat ~ volatile.acidity + alcohol, data = train, family = binomial(link=probit))
+summary(model_v_a)
+
+cat("Model 3 - quality.cat ~ volatile.acidity + density")
+model_v_d <- glm(quality.cat ~ volatile.acidity + density, data = train, family = binomial(link=probit))
+summary(model_v_d)
+
+cat("Model 4 - quality.cat ~ total.sulfur.dioxide + alcohol")
+model_t_a <- glm(quality.cat ~ total.sulfur.dioxide + alcohol, data = train, family = binomial(link=probit))
+summary(model_t_a)
+
+cat("Model 5 - quality.cat ~ total.sulfur.dioxide + density")
+model_t_d <- glm(quality.cat ~ total.sulfur.dioxide + density, data = train, family = binomial(link=probit))
+summary(model_t_d)
+
+```
+
+```{r}
+rbind(
+ mod_vt = ocena_modelu(model_v_t), 
+ mod_va = ocena_modelu(model_v_a), 
+ mod_vd = ocena_modelu(model_v_d),
+ mod_ta = ocena_modelu(model_t_a),
+ mod_td = ocena_modelu(model_t_d))
+```
+Modele z uwzględnionymi oboma zmiennymi poprawiły swoją dokładnośc pod względem kryterium AIC. Na prowadzenie wyszedł model uwzględniający zmienne 'alcohol' oraz 'volatile.acidity'. W następnym kroku poslużymy się już tylko tym modelem. Dodamy do niego zmienną total.sulfur.dioxide i zbadamy różne możliwe interakcje.
+
+
+```{r}
+cat("Model - quality.cat ~ total.sulfur.dioxide + alcohol + volatile.acidity")
+model_t_a_v <- glm(quality.cat ~ total.sulfur.dioxide + alcohol + volatile.acidity, data = train, family = binomial(link=probit))
+summary(model_t_a_v)
+```
+Wartość kryterium AIC delikatnie się poprawiła, podobnie jak dewiancja resztowa. Co ciekawe przy zastosowaniu tej kombinacji zmienna 'total.sulfur.dioxide' weszła na 'wyższy' stopień istotności.
+
+Sprawdźmy ten model z jego interakcjami.
+
+```{r}
+cat("Model - quality.cat ~ total.sulfur.dioxide * alcohol * volatile.acidity")
+model_t_a_v_interactions_full <- glm(quality.cat ~ total.sulfur.dioxide * alcohol * volatile.acidity, data = train, family = binomial(link=probit))
+summary(model_t_a_v_interactions_full)
+```
+AIC poprawiło się dosłownie nieznacznie, przy czym widzimy że jedna interakcja jest prawie niesistotna, a zmienna volatile.acidity straciła istotność po uwzglednieniu jej interakcji z innymi zmiennymi. Zobaczmy co się stanie gdy pozbędziemy się niepotrzebnych współczynników.
+
+```{r}
+cat("Model - quality.cat ~ chosen mix")
+model_t_a_v_interactions_chosen <- glm(quality.cat ~ total.sulfur.dioxide * alcohol + volatile.acidity:total.sulfur.dioxide, data = train, family = binomial(link=probit))
+summary(model_t_a_v_interactions_chosen)
+```
+Co ciekawe przy wyłączeniu nieistotnych statystycznie zmiennych, inna interakcja straciła istotność. Jako ostatni krok usuniemy jeszcze nieistotną interakcję.
+
+
+```{r}
+cat("Model - quality.cat ~ chosen mix")
+model_t_a_v_interactions_chosen_2 <- glm(quality.cat ~ total.sulfur.dioxide + alcohol + volatile.acidity:total.sulfur.dioxide, data = train, family = binomial(link=probit))
+summary(model_t_a_v_interactions_chosen_2)
+```
+
+W tym wypadku wszystkie współczynniki są maksymalnie istotne, ale pogorszeniu uległo wartość kryterium AIC w porównaniu do modelu z pełnymi interakcjami. Sprawdźmy to w porównaniu : 
+
+```{r}
+rbind(
+ mod_t_a_v_full = ocena_modelu(model_t_a_v_interactions_full), 
+ mod_t_a_v_chosen_1 = ocena_modelu(model_t_a_v_interactions_chosen), 
+ mod_t_a_v_chosen_2 = ocena_modelu(model_t_a_v_interactions_chosen_2))
+```
+
+Pomimo faktu że model z pełnymi interakcjami ma nieco lepsze wartości kryterium AIC i dewiancji, wybieramy model z pełną isntotnością statystyczną zmiennych. Warto jednak zauważyć że różńice pomiędzy modelami nie różnią się między sobą znacząco.
+
+Sprawdźmy teraz jak wygląda krzywa ROC dla tego modelu. 
+
+```{r}
+roc_mod_prob <- roc(model_t_a_v_interactions_chosen_2$y, model_t_a_v_interactions_chosen_2$fitted.values)
+roc_mod_prob_test <- roc(test$quality.cat, predict(model_t_a_v_interactions_chosen_2, test, type = "response"))
+
+cat("Optymalne p wynosi",coords(roc_mod_prob, "best")$threshold,"dla zbioru treninowego oraz",coords(roc_mod_prob_test, "best")$threshold,"dla zbioru testowego\n")
+
+ggroc(roc_mod_prob, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 18. Krzywa ROC dla zbioru treningowego, z wybranymi interakcjami") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+
+
+ggroc(roc_mod_prob_test, legacy.axes = TRUE, color="blue")+
+  ggtitle("Ryc. 19. Krzywa ROC dla zbioru testowego, z wybranymi interakcjami") +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="red")+
+  geom_hline(aes(yintercept=1), lty=2, color="grey")+
+  geom_hline(aes(yintercept=0), lty=2, color="grey")+
+  geom_vline(aes(xintercept=1), lty=2, color="grey")+
+  geom_vline(aes(xintercept=0), lty=2, color="grey")+
+  labs(x="1 - specyficzność", y='czułość')+
+  theme_classic()
+```
+
+Wykresy ROC dla zbioru treningowego jak i testowego wyglądają bardzo podobnie (co można zaobserować na powyższych rycinach), co jest jak najbardziej pożądanym efektem. Obliczony został również punkt odcięcia, niezbędny do wykonania poprawnej predykcji.
+
+Po wyspecyfikowaniu subiektywnie najlepszego modelu przyszedł czas sprawdzić jego zdolności predykcyjne. 
+
+```{r}
+check <- coords(roc_mod_prob_test, "best")$threshold
+caret::confusionMatrix(test$quality.cat,
+                       as.factor(ifelse(predict(model_t_a_v_interactions_chosen_2,
+                                                test, type = "response")>check, 1, 0)),
+                                                positive='1')
+print('AUC zbioru testowego')
+as.numeric(auc(test$quality.cat, predict(model_t_a_v_interactions_chosen_2, test, type = "response")))
+```
+
+* `accuracy` - dokładność, czyli odsetek poprawnie zakwalifikowanych zer i jedynek. W przypadku tego modelu jest to `71.1%` na zbiorze testowym.
+* `no information rate (NIR)` - dokładność dla predykcji wygenerowanych losowo. W przypadku badanego modelu jest to `52.66%` na zbiorze testowym
+* `sensitivity` - czułość, stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich obserwowanych jedynek. Mówi on o prawdopodobieństwie pozytywnego zdarzenia pod warunkiem bycia prawdziwie pozytywnym. Porównując wartość czułości dla naszych zbiorów, jest to  `82.14%` dla testowego
+* `specificity` - swoistość, specyficzność - stosunek liczby trafnie sklasyfikowanych zer do wszystkich obserwowanych zer. Stoi w kontrze do czułości, ponieważ mówi o prawdopodobieństwie negatywnego zdarzenia pod warunkiem bycia prawdziwie negatywnym. Dla zbioru testowego `58.82%`.
+* `positive predictive value` - dodatnia zdolność predykcyjna - stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich prognozowanych jedynek. Jest to prawdopodobieństwo, że sklasyfikowane jedynka jest prawdziwą jedynką. Dla zbioru testowego jest to `68.94%`
+* `negative predictive value` - ujemna zdolność predykcyjna - stosunek liczby trafnie sklasyfikowanych zer do wszystkich prognozowanych zer. Jest to prawdopodobieństwo, że sklasyfikowane zero jest prawdziwym zerem. Dla zbioru testowego `74.75%`.
+* `prevalence` - prewalencja, chorobowość - stosunek liczby prawdziwych jedynek do wszystkich obserwacji. Popularna miara w epidemiologii, mówi o odsetku wszystkich jedynek w zbiorze.W zbiorze testowym `52.66%`.
+* `detection rate` - stosunek detekcji - stosunek liczby trafnie sklasyfikowanych jedynek do wszystkich obserwacji. Również popularna miara w naukach o zdrowiu - w naszym zbiorze testowym `43.25%`.
+* `detection prevalence` - częstość wykrywania - stosunek wszystkich sklasyfikowanych jedynek do wszystkich obserwacji. Mówi ona nam więc o prawdopodobieństwie sklasyfikowania obserwacji jako jedynka. W naszym testowym zbiorze `62.75%`.
+* `balanced accuracy` - zbalansowana dokładność - średnia z czułości oraz swoistości, czyli mówi ona o zdolności modelu do poprawnego klasyfikowania obserwacji do grupy. W przypadku tego modelu jest to `70.48%`.
+
+Wartość AUC (czyli pola pod wykresem ROC) kształtuje się na poziomie `0.79`. Oznacza to, że zmienne wybrane do tworzenia modelu są jak najbardziej odpowiednie w kontekście predykcji.
+
+Kwestią wartą wspomnienia jest fakt, że w przypadku modelów probitowych interpretacja wspołczynników nie jest tak oczywista jak w przypadku modelów logitowych. Tutaj informacja niesiona poprzez analizę współczynników dostarczyć nam może informację na temat tego czy dana zmienna jest stymulantą, czy też może destymulantą w kontekście kształtowania się szans trafienia wina danej jakości. Nie umniejsza to jednak faktowi, że modele te nadają się do predykcji.
+
+
+Jako swojego rodzaju eksperyment należałoby traktować analizę tak zwanego 'modelu pełnego', który zawiera w sobie wszystkie zmienne występujące w zbiorze danych oraz modelu nasyconego który zawiera dodatkowo wszystkie interakcje. Modele te nierzadko okazują się matematycznie poprawne, jednak ich interpretacja jest bardzo zawiła i w rzeczywistości na niewiele są one w stanie się przydać.
+
+Oto przykład modelu pełnego:
+
+```{r}
+model_prob_total <- glm(quality.cat ~ ., data = train[,-13], family = binomial(link=probit))
+summary(model_prob_total)
+```
+
+W tym przypadku faktycznie bazując tylko na AIC uznalibyśmy że jest to model najlepszy, jendak jak było to wczesniej wspomniane, taki model na niewiele zdaje się w rzeczywistości, zwłaszcza że zawiera zmienne korelujące ze sobą. Dodatkowo spełnia również kryteria które zaważyły uprzednio na wyborze przez nas modelu który mimo że miał lepsze wartości kryteriów dopsaowania nie miał istotnych wszystkich współczynników.
+
+# Podsumowanie pracy
+
+Na tym kończymy naszą analizę. Model probitowy jak i logitowy mają stosunkowo podobną moc predykcyjną, o ile dobrze się je wyspecyfikuje. Kluczową jednak kwestią w tym wypadku jest interpretacja współczynników modelu, która w przypadku modelów logitowych jest prosta i  intuicyjna. W przypadku gdy model probitowy nie przewyższa znacząco jakością predykcyjną modelu logitowego, dużo lepszą praktyką jest decydować się na wybór tego drugiego. Wynika to z faktu, że modele logitowe dają nam znacznie więcej informacji na temat tego w jaki sposób zmienne objaśniające wpływają na zmienną objaśnianą. 
+
+Dobór modelu logitowego, który jest najlepszy do modelowania szansy na trafienie dobrego wina zależy od naszego celu. Jeżeli celem jest wykrycie istotnej zależności, nie biorąc pod uwagę interpretacji w rzeczywistym świecie, wówczas najlepszym modelem jest model pełny (trzy zmienne objaśniane z interakcjami). Jeśli naszym celem jest wykrycie zależności, którą można przełożyć na rzeczywistość - wówczas najlepszy jest model zawierający trzy zmienne objaśniane bez interakcji. W przypadku, jeśli chcemy faktycznie użyć naszego modelu w życiu mając pewną informację a priori - wówczas najlepszym modelem jest model przewidujący szansę na trafienie dobrego wina poprzez zawartość alkoholu w nim (im więcej alkoholu, tym większa szansa na trafienie dobrego wina). Jak wspominaliśmy wcześniej, ta analiza miałaby szersze zastosowanie jako faktyczne kryterium przy kupnie wina w sklepie, jeśli mielibyśmy informację o czynnikach, które widać na etykietach (kraj pochodzenia wina, rodzaj winogron, winiarnia, czas dojrzewania winogron). Obecna analiza przydaje się jedynie w naukowych rozważaniach o tym temacie, jako że większość z tych czynników jest parametrami fizykochemicznymi, których zwykły śmiertelnik nie jest w stanie zmierzyć bez specjalistycznej aparatury.
+
+# Podział pracy
+
+Wstęp, analiza wstępna oraz eksploracyjna i podsumowanie zostały wykonane wspólnymi siłami. Analizę modeli logitowych wykonał Wojciech Sobczuk, a analizę modeli probitowych Jan Jarosz.
+
+
